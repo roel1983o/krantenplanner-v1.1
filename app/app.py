@@ -64,6 +64,7 @@ def run_notebook(nb_path):
         "-m",
         "jupyter",
         "nbconvert",
+        "--ExecutePreprocessor.cwd=.",
         "--to",
         "notebook",
         "--execute",
@@ -78,6 +79,7 @@ def run_notebook(nb_path):
 
     process = subprocess.Popen(
         cmd,
+        cwd=".",
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True
