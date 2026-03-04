@@ -92,15 +92,30 @@ except Exception:
     )
 
     nb.cells.insert(0, injected)
+
+    # Extra safeguard: zet INPUT_XLSX vlak vóór de eerste aanroep van process_kordiam()
+    reset_cell = new_code_cell(
+        """# --- Injected safeguard (ensure INPUT_XLSX is set right before DEF1 runs) ---
+INPUT_XLSX = 'Kordiam_Report.xlsx'
+"""
+    )
+    inserted = False
+    for i, cell in enumerate(nb.cells):
+        if cell.get("cell_type") == "code" and "process_kordiam" in cell.get("source", ""):
+            nb.cells.insert(i, reset_cell)
+            inserted = True
+            break
+    if not inserted:
+        # Fallback: als we de cel niet vonden, zet hem na de eerste injectie
+        nb.cells.insert(1, reset_cell)
+
     nbformat.write(nb, str(dst_nb))
 
 def _run_notebook_with_timer(nb_path: Path):
     cmd = [
         "python", "-m", "jupyter", "nbconvert",
         "--to", "notebook",
-        "--execute",
-        f"--ExecutePreprocessor.cwd={REPO_ROOT}",
-        "--ExecutePreprocessor.timeout=1800",
+        "--execute",        "--ExecutePreprocessor.timeout=1800",
         "--output", "pipeline_executed.ipynb",
         str(nb_path),
     ]
