@@ -5,3 +5,4 @@ pillow
 jupyter
 nbconvert
 ipykernel
+nbformat
