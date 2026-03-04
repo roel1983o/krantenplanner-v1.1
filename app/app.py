@@ -27,5 +27,20 @@ if run:
 
     st.success("Krantenplanning gereed")
 
-    st.download_button("Download planning in Excel","placeholder","krantenplanning.xlsx")
-    st.download_button("Download hand-out in PDF","placeholder","handout.pdf")
+    # Download Excel
+    with open("krantenplanning.xlsx", "rb") as f:
+        st.download_button(
+            "Download planning in Excel",
+            data=f,
+            file_name="krantenplanning.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    # Download PDF (output van DEF3)
+    with open("handout_modern_v3.pdf", "rb") as f:
+        st.download_button(
+            "Download hand-out in PDF",
+            data=f,
+            file_name="handout_modern_v3.pdf",
+            mime="application/pdf"
+        )
