@@ -1,163 +1,190 @@
 
 import streamlit as st
-import time, subprocess, os, json, shutil, zipfile, tempfile
+import time, subprocess, os, glob, shutil
 from pathlib import Path
 
 st.set_page_config(page_title="Krantenplanner V1.1")
 st.title("Krantenplanner V1.1")
 
-kordiam = st.file_uploader("Upload Kordiam Report", type=["xlsx","xls","csv"])
-posities = st.file_uploader("Upload Posities en Kernmerken", type=["xlsx","xls"])
+# Uploads (dagelijks wisselend)
+kordiam = st.file_uploader("Upload Kordiam Report", type=["xlsx", "xls", "csv"])
+posities = st.file_uploader("Upload Posities en Kenmerken", type=["xlsx", "xls"])
 
-# Paths inside repo (Render runs from repo root)
-REPO_ROOT = Path(__file__).resolve().parents[1]
-ASSETS_DIR = REPO_ROOT / "assets"
-NOTEBOOK_PATH = REPO_ROOT / "notebooks" / "pipeline.ipynb"
-
-run = False
-if kordiam and posities:
-    run = st.button("Genereer krantenplanning")
-
-def _write_uploaded(uploaded_file, dest_path: Path):
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(dest_path, "wb") as f:
+def _write_upload(uploaded_file, target_path: str) -> None:
+    Path(target_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(target_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
-    return dest_path
 
-def _make_templates_zip(src_templates_dir: Path, dest_zip: Path):
-    dest_zip.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(dest_zip, "w", compression=zipfile.ZIP_DEFLATED) as z:
-        for p in src_templates_dir.rglob("*.jpg"):
-            # store with just filename (not full path) to match notebook expectations (CODE.jpg)
-            z.write(p, arcname=p.name)
-    return dest_zip
-
-def _ensure_fake_google_colab_files(workdir: Path):
+def _ensure_template_zip() -> None:
     """
-    Notebook gebruikt: from google.colab import files; uploaded = files.upload()
-    We maken een lokale stub-module google/colab/files.py zodat dit ook buiten Colab werkt.
-    De stub leest UPLOAD_SEQUENCE (JSON list) uit env en geeft per upload() call steeds het volgende pad terug.
+    Notebook verwacht 'Template jpgs.zip' als asset.
+    In de repo staan de JPGs uitgepakt; we maken hier runtime een zip met dezelfde naam.
     """
-    pkg_dir = workdir / "google" / "colab"
-    pkg_dir.mkdir(parents=True, exist_ok=True)
-    (workdir / "google" / "__init__.py").write_text("")
-    (workdir / "google" / "colab" / "__init__.py").write_text("")
-    (workdir / "google" / "colab" / "files.py").write_text(
-        "import os, json\n"
-        "_seq = None\n"
-        "def upload():\n"
-        "    global _seq\n"
-        "    if _seq is None:\n"
-        "        _seq = json.loads(os.environ.get('UPLOAD_SEQUENCE','[]'))\n"
-        "    if not _seq:\n"
-        "        raise RuntimeError('UPLOAD_SEQUENCE is leeg; geen bestand om te leveren aan files.upload()')\n"
-        "    path = _seq.pop(0)\n"
-        "    # Colab returns dict of {filename: bytes}; notebook pakt next(iter(keys()))\n"
-        "    return {path: b''}\n"
-    )
+    zip_name = "Template jpgs.zip"
+    if os.path.exists(zip_name):
+        return
 
-if run:
-    # Workdir per run
-    workdir = Path(tempfile.mkdtemp(prefix="krantenplanner_run_"))
-    # Zorg dat notebook relative paths naar assets werken
-    # We kopiëren assets naar workdir/assets (zodat paths identiek zijn)
-    shutil.copytree(ASSETS_DIR, workdir / "assets")
-
-    # Dagelijkse uploads wegschrijven in workdir (we gebruiken vaste namen zodat notebook ze eenduidig kan vinden)
-    kordiam_path = _write_uploaded(kordiam, workdir / "Kordiam_Report.xlsx")
-    posities_path = _write_uploaded(posities, workdir / "Posities_en_kenmerken.xlsx")
-
-    # Maak Template jpgs.zip vanuit uitgepakte templates
-    templates_dir = workdir / "assets" / "templates"
-    template_zip_path = _make_templates_zip(templates_dir, workdir / "Template jpgs.zip")
-
-    # Upload-volgorde exact zoals notebook de upload-cellen aanroept
-    upload_sequence = [
-        "assets/Templates.xlsx",
-        "assets/Beslispad Spread.xlsx",
-        "assets/Beslispad EP.xlsx",
-        "assets/Hoe vaak komt wat voor.xlsx",
-        "assets/Mappingregels parser.xlsx",
-        str(kordiam_path.name),                 # Kordiam report (in workdir root)
-        str(posities_path.name),                # Posities en kenmerken (in workdir root)
-        "assets/Hoe vaak komt wat voor.xlsx",   # DEF3 mapping upload
-        str(template_zip_path.name),            # DEF3 template zip upload
+    candidates = [
+        "assets/templates",
+        "assets/Template jpgs",
+        "assets/template_jpgs",
     ]
+    templates_dir = None
+    for c in candidates:
+        if os.path.isdir(c):
+            templates_dir = c
+            break
 
-    # Stub google.colab.files.upload
-    _ensure_fake_google_colab_files(workdir)
+    if templates_dir is None:
+        # Als jouw repo een andere mapnaam gebruikt, dan zie je dit direct in UI
+        raise FileNotFoundError("Kon templates-map met JPGs niet vinden in assets/ (verwacht assets/templates/).")
 
-    # Execute notebook
-    start = time.time()
-    timer = st.empty()
-    status = st.empty()
+    # Maak zip in current working dir met exact de verwachte naam
+    base_name = "Template jpgs"
+    # shutil.make_archive maakt base_name + .zip, dus eerst maken en dan hernoemen
+    tmp_zip = shutil.make_archive(base_name, "zip", templates_dir)
+    os.replace(tmp_zip, zip_name)
 
-    env = os.environ.copy()
-    env["UPLOAD_SEQUENCE"] = json.dumps(upload_sequence)
-    # Zorg dat onze stub-module wordt gevonden vóór echte packages
-    env["PYTHONPATH"] = str(workdir) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+def _find_planning_xlsx() -> str:
+    """
+    We weten zeker: PDF heet 'handout_modern_v3.pdf' (uit notebook).
+    Excel-naam kan variëren (case/underscore). We zoeken de juiste foutloos.
+    """
+    # 1) voorkeursnamen (meest waarschijnlijk)
+    preferred = [
+        "Krantenplanning.xlsx",
+        "krantenplanning.xlsx",
+        "Krantenplannen.xlsx",
+        "krantenplannen.xlsx",
+    ]
+    for p in preferred:
+        if os.path.exists(p):
+            return p
 
+    # 2) alles in root + outputs/ doorzoeken
+    candidates = glob.glob("*.xlsx") + glob.glob("outputs/*.xlsx")
+
+    # filter bekende input/assets uit (zodat we niet per ongeluk Templates.xlsx teruggeven)
+    blacklist = {
+        "Templates.xlsx",
+        "Beslispad EP.xlsx",
+        "Beslispad Spread.xlsx",
+        "Hoe vaak komt wat voor.xlsx",
+        "Mappingregels parser.xlsx",
+        "Posities en kenmerken.xlsx",
+        "Posities en Kernmerken.xlsx",
+    }
+    cleaned = []
+    for c in candidates:
+        name = os.path.basename(c)
+        if name in blacklist:
+            continue
+        cleaned.append(c)
+
+    if not cleaned:
+        raise FileNotFoundError("Geen output .xlsx gevonden na uitvoering. Pipeline lijkt geen Excel te hebben weggeschreven.")
+
+    # 3) kies de meest waarschijnlijk: bevat 'kranten' en 'plan' in de naam
+    def score(path: str) -> int:
+        n = os.path.basename(path).lower()
+        s = 0
+        if "kranten" in n: s += 2
+        if "plan" in n: s += 2
+        if "planning" in n: s += 2
+        return s
+
+    cleaned.sort(key=lambda p: (score(p), os.path.getmtime(p)), reverse=True)
+    return cleaned[0]
+
+def _run_notebook_with_timer(nb_path: str):
+    """
+    Draait notebook via nbconvert en toont live timer zolang het proces loopt.
+    """
+    # NB: nbconvert moet in requirements staan (zie stap 2 hieronder)
     cmd = [
-        "python", "-m", "nbconvert",
+        "python", "-m", "jupyter", "nbconvert",
         "--to", "notebook",
-        "--execute", str(NOTEBOOK_PATH),
-        "--output", "executed_pipeline.ipynb",
+        "--execute",
         "--ExecutePreprocessor.timeout=1800",
-        "--ExecutePreprocessor.kernel_name=python3",
+        "--output", "pipeline_executed.ipynb",
+        nb_path,
     ]
 
-    status.info("Krantenplanning wordt uitgevoerd…")
+    status = st.empty()
+    timer = st.empty()
 
-    proc = subprocess.Popen(cmd, cwd=str(workdir), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    start = time.time()
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
-    # live timer while process runs
-    log_lines = []
+    # live timer + (compact) status
     while True:
         elapsed = int(time.time() - start)
-        m = elapsed // 60
-        s = elapsed % 60
+        m, s = divmod(elapsed, 60)
         timer.write(f"Krantenplanning in uitvoering: {m:02d} minuten en {s:02d} seconden")
 
-        line = proc.stdout.readline() if proc.stdout else ""
-        if line:
-            log_lines.append(line.rstrip())
-        if proc.poll() is not None:
-            break
+        ret = p.poll()
+        if ret is not None:
+            # Process klaar; lees output
+            out = p.stdout.read() if p.stdout else ""
+            return ret, out
+
         time.sleep(1)
 
-    rc = proc.returncode
-    if rc != 0:
-        status.error("Er ging iets mis bij het uitvoeren van de pipeline.")
-        # toon laatste logs om te debuggen
-        if log_lines:
-            st.code("\n".join(log_lines[-50:]))
-        st.stop()
+# Knop pas actief als beide uploads aanwezig zijn
+can_run = kordiam is not None and posities is not None
+run = st.button("Genereer krantenplanning", disabled=not can_run)
 
-    status.success("Krantenplanning gereed")
+if run:
+    try:
+        # Schrijf uploads naar bestandsnamen die notebook verwacht/kan vinden
+        # (we bewaren ook de originele naam voor traceerbaarheid)
+        _write_upload(kordiam, f"INPUT_KORDIAM_{kordiam.name}")
+        _write_upload(posities, f"INPUT_POSITIES_{posities.name}")
 
-    # Outputs (volgens notebook)
-    excel_out = workdir / "Krantenplanning.xlsx"
-    pdf_out = workdir / "handout_modern_v3.pdf"
+        # Vaak verwachten notebooks een vaste bestandsnaam; zet ook die neer:
+        _write_upload(kordiam, "Kordiam_Report.xlsx")
+        _write_upload(posities, "Posities_en_Kenmerken.xlsx")
 
-    # Downloads alleen tonen als bestanden bestaan
-    if not excel_out.exists():
-        st.error("Krantenplanning.xlsx is niet gevonden na uitvoering.")
-    else:
-        with open(excel_out, "rb") as f:
-            st.download_button(
-                "Download planning in Excel",
-                data=f,
-                file_name="Krantenplanning.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+        # Zorg dat de template zip bestaat (notebook-assetnaam)
+        _ensure_template_zip()
 
-    if not pdf_out.exists():
-        st.error("handout_modern_v3.pdf is niet gevonden na uitvoering.")
-    else:
-        with open(pdf_out, "rb") as f:
-            st.download_button(
-                "Download hand-out in PDF",
-                data=f,
-                file_name="handout_modern_v3.pdf",
-                mime="application/pdf",
-            )
+        # Voer notebook uit
+        ret, out = _run_notebook_with_timer("notebooks/pipeline.ipynb")
+
+        if ret != 0:
+            st.error("Pipeline is gestopt met een fout. Hieronder de output:")
+            st.code(out[-4000:] if out else "(geen output)", language="text")
+        else:
+            st.success("Krantenplanning gereed")
+
+            # Excel output vinden (foutloos)
+            planning_path = _find_planning_xlsx()
+
+            # PDF output is zeker (uit jouw notebook)
+            pdf_path = "handout_modern_v3.pdf"
+            if not os.path.exists(pdf_path):
+                # soms schrijft notebook in outputs/ of andere plek; probeer ook daar
+                alt = glob.glob("**/handout_modern_v3.pdf", recursive=True)
+                if alt:
+                    pdf_path = alt[0]
+                else:
+                    raise FileNotFoundError("PDF 'handout_modern_v3.pdf' niet gevonden na uitvoering.")
+
+            with open(planning_path, "rb") as f:
+                st.download_button(
+                    "Download planning in Excel",
+                    data=f,
+                    file_name=os.path.basename(planning_path),
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+
+            with open(pdf_path, "rb") as f:
+                st.download_button(
+                    "Download hand-out in PDF",
+                    data=f,
+                    file_name=os.path.basename(pdf_path),
+                    mime="application/pdf",
+                )
+
+    except Exception as e:
+        st.error(f"Fout: {e}")
